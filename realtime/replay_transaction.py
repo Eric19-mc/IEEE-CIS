@@ -16,7 +16,7 @@ KAFKA_SERVERS = [
 
 TOPIC = "transaction_topic"
 
-CSV_FILE = r"D:\GitHub\data-engineering-learning\IEEE-CIS\data\train_transaction.csv"
+CSV_FILE = r"D:\GitHub\IEEE-CIS\data\train_transaction.csv"
 
 
 # =========================
