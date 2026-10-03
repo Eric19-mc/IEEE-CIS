@@ -1,261 +1,329 @@
-import pandas as pd
-import lightgbm as lgb
+import os
+import pickle
 
-from pathlib import Path
-from sklearn.model_selection import train_test_split
+import lightgbm as lgb
+import pandas as pd
+
 from sklearn.metrics import (
-    roc_auc_score,
     average_precision_score,
+    classification_report,
     precision_score,
     recall_score,
-    f1_score,
-    confusion_matrix,
+    roc_auc_score,
 )
 
 
-# =========================
+# =========================================================
 # 路径
-# =========================
+# =========================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
 
-INPUT_FILE = BASE_DIR / "model" / "output" / "train_features.csv"
-MODEL_DIR = BASE_DIR / "model" / "output"
+FEATURE_FILE = os.path.join(
+    BASE_DIR,
+    "model",
+    "train_features.pkl",
+)
 
-MODEL_FILE = MODEL_DIR / "finguard_lgbm_v1.txt"
-
-
-# =========================
-# 读取数据
-# =========================
-
-print("========== 读取特征数据 ==========")
-
-df = pd.read_csv(INPUT_FILE)
-
-print("数据规模:", df.shape)
-
-
-# =========================
-# 标签
-# =========================
-
-y = df["isFraud"]
+MODEL_FILE = os.path.join(
+    BASE_DIR,
+    "model",
+    "model.pkl",
+)
 
 
-# =========================
-# 删除不作为模型特征的字段
-# =========================
+print("=" * 70)
+print("FinGuard LightGBM 模型训练")
+print("=" * 70)
+
+
+# =========================================================
+# 1. 读取数据
+# =========================================================
+
+print("\n正在读取预处理数据...")
+
+df = pd.read_pickle(
+    FEATURE_FILE
+)
+
+print(
+    f"数据量：{len(df):,}"
+)
+
+print(
+    f"字段数量：{len(df.columns)}"
+)
+
+
+# =========================================================
+# 2. 按时间排序
+# =========================================================
+
+print("\n正在按照 TransactionDT 排序...")
+
+df = df.sort_values(
+    "TransactionDT"
+).reset_index(
+    drop=True
+)
+
+
+# =========================================================
+# 3. 构造 X / y
+# =========================================================
+
+TARGET = "isFraud"
 
 DROP_COLUMNS = [
     "isFraud",
     "TransactionID",
-    "TransactionDT",
 ]
 
 
-X = df.drop(columns=DROP_COLUMNS)
-
-
-# =========================
-# 类别字段
-# =========================
-
-categorical_columns = X.select_dtypes(
-    include=["object", "str"]
-).columns.tolist()
-
-print("\n类别字段数量:", len(categorical_columns))
-
-print("类别字段:")
-print(categorical_columns)
-
-
-for col in categorical_columns:
-    X[col] = X[col].astype("category")
-
-
-# =========================
-# 划分训练集 / 验证集
-# =========================
-
-print("\n========== 划分数据 ==========")
-
-X_train, X_valid, y_train, y_valid = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42,
-    stratify=y,
+X = df.drop(
+    columns=DROP_COLUMNS
 )
 
-print("训练集:", X_train.shape)
-print("验证集:", X_valid.shape)
+y = df[TARGET]
+
 
 print(
-    "训练集欺诈率:",
-    round(y_train.mean() * 100, 4),
-    "%"
+    f"\n模型特征数量：{X.shape[1]}"
 )
 
 print(
-    "验证集欺诈率:",
-    round(y_valid.mean() * 100, 4),
-    "%"
+    f"欺诈样本：{int(y.sum()):,}"
+)
+
+print(
+    f"欺诈比例：{y.mean():.4%}"
 )
 
 
-# =========================
-# LightGBM
-# =========================
+# =========================================================
+# 4. 时间划分
+# =========================================================
 
-print("\n========== 开始训练 LightGBM ==========")
+split_index = int(
+    len(df) * 0.8
+)
+
+X_train = X.iloc[
+    :split_index
+]
+
+X_valid = X.iloc[
+    split_index:
+]
+
+y_train = y.iloc[
+    :split_index
+]
+
+y_valid = y.iloc[
+    split_index:
+]
+
+
+print("\n" + "=" * 70)
+print("数据集划分")
+print("=" * 70)
+
+print(
+    f"训练集：{len(X_train):,}"
+)
+
+print(
+    f"验证集：{len(X_valid):,}"
+)
+
+print(
+    f"训练集欺诈率：{y_train.mean():.4%}"
+)
+
+print(
+    f"验证集欺诈率：{y_valid.mean():.4%}"
+)
+
+
+# =========================================================
+# 5. LightGBM
+# =========================================================
+
+print("\n" + "=" * 70)
+print("开始训练 LightGBM")
+print("=" * 70)
+
 
 model = lgb.LGBMClassifier(
     objective="binary",
-
     n_estimators=1000,
     learning_rate=0.05,
-
-    num_leaves=31,
+    num_leaves=64,
     max_depth=-1,
-
     subsample=0.8,
     colsample_bytree=0.8,
-
     reg_alpha=0.1,
     reg_lambda=0.1,
-
     random_state=42,
-
     n_jobs=-1,
 )
 
+
+# =========================================================
+# 6. 训练
+# =========================================================
 
 model.fit(
     X_train,
     y_train,
 
-    categorical_feature=categorical_columns,
-
     eval_set=[
-        (X_valid, y_valid)
+        (
+            X_valid,
+            y_valid,
+        )
     ],
 
     callbacks=[
         lgb.early_stopping(
-            50,
-            verbose=True
-        )
+            50
+        ),
+        lgb.log_evaluation(
+            50
+        ),
     ],
 )
 
 
-# =========================
-# 预测
-# =========================
+# =========================================================
+# 7. 预测
+# =========================================================
 
-print("\n========== 模型评估 ==========")
+print("\n正在进行验证集预测...")
 
-y_prob = model.predict_proba(
+probability = model.predict_proba(
     X_valid
 )[:, 1]
 
 
-# 默认阈值
-threshold = 0.5
+# =========================================================
+# 8. 指标
+# =========================================================
 
-y_pred = (
-        y_prob >= threshold
-).astype(int)
-
-
-# =========================
-# 指标
-# =========================
-
-roc_auc = roc_auc_score(
+auc = roc_auc_score(
     y_valid,
-    y_prob
+    probability,
 )
 
 pr_auc = average_precision_score(
     y_valid,
-    y_prob
+    probability,
 )
+
+
+# 使用 0.5 作为基础分类阈值
+prediction = (
+        probability >= 0.5
+).astype(int)
+
 
 precision = precision_score(
     y_valid,
-    y_pred,
-    zero_division=0
+    prediction,
+    zero_division=0,
 )
 
 recall = recall_score(
     y_valid,
-    y_pred,
-    zero_division=0
-)
-
-f1 = f1_score(
-    y_valid,
-    y_pred,
-    zero_division=0
+    prediction,
+    zero_division=0,
 )
 
 
-print("\nROC-AUC :", round(roc_auc, 6))
-print("PR-AUC  :", round(pr_auc, 6))
-print("Precision:", round(precision, 6))
-print("Recall   :", round(recall, 6))
-print("F1       :", round(f1, 6))
+print("\n" + "=" * 70)
+print("模型评估")
+print("=" * 70)
 
-
-# =========================
-# 混淆矩阵
-# =========================
-
-print("\n========== 混淆矩阵 ==========")
-
-cm = confusion_matrix(
-    y_valid,
-    y_pred
-)
-
-print(cm)
-
-
-# =========================
-# 特征重要性
-# =========================
-
-print("\n========== Top 20 特征 ==========")
-
-importance = pd.DataFrame({
-    "feature": X.columns,
-    "importance": model.feature_importances_,
-})
-
-importance = importance.sort_values(
-    "importance",
-    ascending=False
+print(
+    f"AUC：{auc:.6f}"
 )
 
 print(
-    importance.head(20).to_string(
+    f"PR-AUC：{pr_auc:.6f}"
+)
+
+print(
+    f"Precision：{precision:.6f}"
+)
+
+print(
+    f"Recall：{recall:.6f}"
+)
+
+
+print("\n分类报告：")
+
+print(
+    classification_report(
+        y_valid,
+        prediction,
+        digits=4,
+        zero_division=0,
+    )
+)
+
+
+# =========================================================
+# 9. 特征重要性
+# =========================================================
+
+print("\n" + "=" * 70)
+print("Top 30 特征重要性")
+print("=" * 70)
+
+importance = pd.DataFrame(
+    {
+        "feature": X.columns,
+        "importance": model.feature_importances_,
+    }
+).sort_values(
+    "importance",
+    ascending=False,
+)
+
+print(
+    importance.head(30).to_string(
         index=False
     )
 )
 
 
-# =========================
-# 保存模型
-# =========================
+# =========================================================
+# 10. 保存模型
+# =========================================================
 
-print("\n========== 保存模型 ==========")
+print("\n正在保存模型...")
 
-model.booster_.save_model(
-    str(MODEL_FILE)
+with open(
+        MODEL_FILE,
+        "wb",
+) as f:
+
+    pickle.dump(
+        model,
+        f,
+    )
+
+
+print(
+    f"模型已保存："
+    f"{MODEL_FILE}"
 )
 
-print("模型保存完成:")
-print(MODEL_FILE)
+print("\n训练完成。")
