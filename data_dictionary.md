@@ -1,4 +1,4 @@
-# IEEE-CIS 数据集数据字典 v1.0
+# IEEE-CIS 数据集数据字典
 
 ## 1. 数据集基本信息
 - 来源：Kaggle IEEE-CIS Fraud Detection (Vesta 公司真实电商交易)
